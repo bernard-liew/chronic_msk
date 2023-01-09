@@ -1,0 +1,181 @@
+---
+title: "explore"
+author: "Bernard"
+date: "2022-10-06"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Load package
+
+```{r}
+library(tidyverse)
+library(data.table)
+library (cowplot)
+library (officer)
+library (flextable)
+library (dataPreparation)
+
+# ML
+library("iboost")
+library("mboost")
+library (earth)
+library(caret)
+library (SignifReg)
+```
+
+## Import data
+
+```{r}
+df <- rio::import ("data/BBDD.xlsx")
+df <- janitor::clean_names(df)
+```
+
+# Explore
+
+```{r}
+skimr::skim (df)
+
+mice::md.pattern(df, rotate.names = TRUE)
+```
+
+
+# Subset
+
+```{r}
+df2 <- df %>%
+  dplyr::select(gender, 
+         age, 
+         main_pain_location, 
+         pain_extent,
+         profession_status, 
+         educational_level, 
+         comorbidity,
+         gcps_total_baseline,
+         expect_final_score,
+         lot_r_final_score,
+         cpaq_final_score,
+         gcps_total_1year_follow_up) 
+
+names(df2) <- c("gender",
+                "age",
+                "pain_loc",
+                "pain_ext",
+                "work",
+                "education",
+                "comorbidity",
+                "gcps",
+                "expect",
+                "lot",
+                "cpaq",
+                "gcps_t1")
+
+df2 <- df2%>%
+  mutate (pain_loc = case_when(
+    
+    pain_loc %in% c(2, 7, 8, 9) ~ "UL",
+    pain_loc %in% c(3, 4, 5) ~ "LL",
+    pain_loc == 0 ~ "Lx",
+    pain_loc == 1 ~ "Cx",
+    TRUE ~ "FM"
+  )) %>%
+  mutate_at (c("gender", "pain_loc", "pain_ext", 
+               "work", "education", "comorbidity"), factor)
+skimr::skim (df2)
+```
+
+# Impute
+
+```{r}
+# imp <- mice::mice(df2, m = 20, seed = 155, maxit = 30, meth = "rf")
+# 
+# saveRDS(imp, "output/imp.RDS")
+imp <- readRDS("output/imp.RDS")
+
+set.seed(123)
+rand_n <- sample (1:20, 1)
+
+df3 <- mice::complete (imp, rand_n)
+
+pred_num <- c("age", "gcps", "expect", "lot", "cpaq")
+
+df3 <-  df3 %>%
+  mutate_at(vars (pred_num), ~scale(.x, center = TRUE, scale = FALSE) %>%as.numeric) 
+skimr::skim (df3)
+```
+
+```{r}
+ggplot (df3) +
+  geom_point(aes (x = cpaq, y = gcps_t1))
+```
+
+
+# MARS
+
+```{r}
+# create a tuning grid
+hyper_grid <- expand.grid(
+  degree = 1:2, 
+  nprune = seq(2, 20, length.out = 10)
+)
+
+
+set.seed(123)  # for reproducibility
+cv_mars <- train(
+  x = df3 %>% dplyr::select (-gcps_t1),
+  y = as.numeric (df3$gcps_t1),
+  method = "earth",
+  linpreds=FALSE,
+  metric = "RMSE",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = hyper_grid
+)
+
+cv_mars$bestTune
+ggplot(cv_mars)
+
+m2 <- earth (gcps_t1 ~ .,
+                data = df3,
+                degree = 1,
+                nprune = 6,
+                linpreds=FALSE)
+
+summary (m2)
+
+```
+
+# mboost
+
+```{r}
+library("iboost")
+library("mboost")
+
+df4 <- df3 %>%
+  mutate_at(vars (age, gcps, expect, lot, cpaq), scale, center = TRUE, scale = FALSE)
+
+f1 <- gcps_t1 ~ 
+  bols(gender)  + 
+  bols(age)  + 
+  bols(pain_loc)  + 
+  bols(pain_ext)  + 
+  bols(work)  + 
+  bols(comorbidity)  + 
+  bols(gcps)  + 
+  bols(expect)  + 
+  bols(lot)  + 
+  bols(cpaq)  + 
+  bbs(age)  + 
+  bbs(gcps)  + 
+  bbs(expect)  + 
+  bbs(lot)  + 
+  bbs(cpaq) 
+  
+m1 <- gamboost (f1, data = df4)
+cvm <- cvrisk(m1)
+plot(cvm)
+m1[mstop(cvm)]
+
+
+```
+
