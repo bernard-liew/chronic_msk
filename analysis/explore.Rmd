@@ -142,10 +142,13 @@ m2 <- earth (gcps_t1 ~ .,
                 linpreds=FALSE)
 
 summary (m2)
-
+plot(m2)
+termplot(m2)
 ```
 
 # mboost
+
+## Basic model
 
 ```{r}
 library("iboost")
@@ -176,6 +179,90 @@ cvm <- cvrisk(m1)
 plot(cvm)
 m1[mstop(cvm)]
 
+plot(m1)
+hist(m1$resid(), breaks=50)
+```
 
+## Adapted Degrees-of-Freedom
+
+```{r}
+f2 <- gcps_t1 ~ 
+  bols(gender, df = 1)  + 
+  bols(age, df = 1)  + 
+  bols(pain_loc, df = 1)  + 
+  bols(pain_ext, df = 1)  + 
+  bols(work, df = 1)  + 
+  bols(comorbidity, df = 1)  + 
+  bols(gcps, df = 1)  + 
+  bols(expect, df = 1)  + 
+  bols(lot, df = 1)  + 
+  bols(cpaq, df = 1)  + 
+  bbs(age, df = 1, center = TRUE)  + 
+  bbs(gcps, df = 1, center = TRUE)  + 
+  bbs(expect, df = 1, center = TRUE)  + 
+  bbs(lot, df = 1, center = TRUE)  + 
+  bbs(cpaq, df = 1, center = TRUE) 
+  
+m2 <- gamboost (f2, data = df4, control = boost_control(mstop = 1000))
+cvm <- cvrisk(m2)
+plot(cvm)
+m2[mstop(cvm)]
+
+plot(m2)
+hist(m2$resid(), breaks=50)
+```
+
+## Zero-inflated Model
+
+```{r}
+m3 <- gamboost (f2, data = df4, control = boost_control(mstop = 1000), 
+                family = Hurdle())
+cvm <- cvrisk(m3)
+plot(cvm)
+m3[mstop(cvm)]
+
+plot(m3)
+hist(m3$resid(), breaks=50)
+```
+
+# GAM
+
+```{r}
+library(mgcv)
+
+fgam <- gcps_t1 ~ 
+  gender +
+  pain_loc  + 
+  pain_ext  + 
+  work  + 
+  comorbidity  + 
+  s(age)  + 
+  s(gcps)  + 
+  s(expect)  + 
+  s(lot)  + 
+  s(cpaq) 
+
+gam1 <- gam(fgam, select = TRUE, data = df4)
+summary(gam1) # deviance explained = 42.4%
+anova(gam1)
+
+plot(gam1)
+gam.check(gam1)
+```
+
+```{r}
+gam2 <- gam(fgam, select = TRUE, data = df4, family = ziP)
+summary(gam2) # deviance explained = 94.6%
+anova(gam2)
+
+plot(gam2)
+gam.check(gam2)
+# convergence check
+gam2$outer.info
+# examine if the range of predicted values 
+# is sane for the zero cases
+range(predict(gam2, type = "response")[df4$gcps_t1==0])
+# check zero prediction 
+boxplot(predict(gam2) ~ (df4$gcps_t1==0))
 ```
 
