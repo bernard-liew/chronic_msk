@@ -12,3 +12,5 @@ analysis/site_libs
 data/*.docx
 data/*.dpdf
 output/*.RDS
+
+data/fig2.tiff
