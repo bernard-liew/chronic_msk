@@ -18,11 +18,11 @@ library (flextable)
 library (dataPreparation)
 
 # ML
-library("iboost")
-library("mboost")
-library (earth)
-library(caret)
-library (SignifReg)
+library (mgcv)
+library (mgcViz)
+library (buildmer)
+library (DHARMa)
+library (gratia)
 ```
 
 ## Import data
@@ -100,9 +100,11 @@ df3 <- mice::complete (imp, rand_n)
 
 pred_num <- c("age", "gcps", "expect", "lot", "cpaq")
 
-df3 <-  df3 %>%
-  mutate_at(vars (pred_num), ~scale(.x, center = TRUE, scale = FALSE) %>%as.numeric) 
 skimr::skim (df3)
+
+df4 <- df3 %>%
+  mutate_at(vars (age, gcps, expect, lot, cpaq), scale, center = TRUE, scale = FALSE)
+
 ```
 
 ```{r}
@@ -110,126 +112,11 @@ ggplot (df3) +
   geom_point(aes (x = cpaq, y = gcps_t1))
 ```
 
-
-# MARS
-
-```{r}
-# create a tuning grid
-hyper_grid <- expand.grid(
-  degree = 1:2, 
-  nprune = seq(2, 20, length.out = 10)
-)
-
-
-set.seed(123)  # for reproducibility
-cv_mars <- train(
-  x = df3 %>% dplyr::select (-gcps_t1),
-  y = as.numeric (df3$gcps_t1),
-  method = "earth",
-  linpreds=FALSE,
-  metric = "RMSE",
-  trControl = trainControl(method = "cv", number = 10),
-  tuneGrid = hyper_grid
-)
-
-cv_mars$bestTune
-ggplot(cv_mars)
-
-m2 <- earth (gcps_t1 ~ .,
-                data = df3,
-                degree = 1,
-                nprune = 6,
-                linpreds=FALSE)
-
-summary (m2)
-plot(m2)
-termplot(m2)
-```
-
-# mboost
-
-## Basic model
-
-```{r}
-library("iboost")
-library("mboost")
-
-df4 <- df3 %>%
-  mutate_at(vars (age, gcps, expect, lot, cpaq), scale, center = TRUE, scale = FALSE)
-
-f1 <- gcps_t1 ~ 
-  bols(gender)  + 
-  bols(age)  + 
-  bols(pain_loc)  + 
-  bols(pain_ext)  + 
-  bols(work)  + 
-  bols(comorbidity)  + 
-  bols(gcps)  + 
-  bols(expect)  + 
-  bols(lot)  + 
-  bols(cpaq)  + 
-  bbs(age)  + 
-  bbs(gcps)  + 
-  bbs(expect)  + 
-  bbs(lot)  + 
-  bbs(cpaq) 
-  
-m1 <- gamboost (f1, data = df4)
-cvm <- cvrisk(m1)
-plot(cvm)
-m1[mstop(cvm)]
-
-plot(m1)
-hist(m1$resid(), breaks=50)
-```
-
-## Adapted Degrees-of-Freedom
-
-```{r}
-f2 <- gcps_t1 ~ 
-  bols(gender, df = 1)  + 
-  bols(age, df = 1)  + 
-  bols(pain_loc, df = 1)  + 
-  bols(pain_ext, df = 1)  + 
-  bols(work, df = 1)  + 
-  bols(comorbidity, df = 1)  + 
-  bols(gcps, df = 1)  + 
-  bols(expect, df = 1)  + 
-  bols(lot, df = 1)  + 
-  bols(cpaq, df = 1)  + 
-  bbs(age, df = 1, center = TRUE)  + 
-  bbs(gcps, df = 1, center = TRUE)  + 
-  bbs(expect, df = 1, center = TRUE)  + 
-  bbs(lot, df = 1, center = TRUE)  + 
-  bbs(cpaq, df = 1, center = TRUE) 
-  
-m2 <- gamboost (f2, data = df4, control = boost_control(mstop = 1000))
-cvm <- cvrisk(m2)
-plot(cvm)
-m2[mstop(cvm)]
-
-plot(m2)
-hist(m2$resid(), breaks=50)
-```
-
-## Zero-inflated Model
-
-```{r}
-m3 <- gamboost (f2, data = df4, control = boost_control(mstop = 1000), 
-                family = Hurdle())
-cvm <- cvrisk(m3)
-plot(cvm)
-m3[mstop(cvm)]
-
-plot(m3)
-hist(m3$resid(), breaks=50)
-```
-
 # GAM
 
-```{r}
-library(mgcv)
+## Formula
 
+```{r}
 fgam <- gcps_t1 ~ 
   gender +
   pain_loc  + 
@@ -242,18 +129,51 @@ fgam <- gcps_t1 ~
   s(lot)  + 
   s(cpaq) 
 
-gam1 <- gam(fgam, select = TRUE, data = df4)
+```
+
+
+### Gaussian distribution
+
+```{r}
+
+gam1 <- gam(fgam, data = df4)
 summary(gam1) # deviance explained = 42.4%
 anova(gam1)
 
-plot(gam1)
-gam.check(gam1)
+appraise(gam1)
+
+simulationOutput <- simulateResiduals(fittedModel = gam1)
+plot(simulationOutput)
+testZeroInflation(simulationOutput)
 ```
 
+### ZiP distribution
+
 ```{r}
-gam2 <- gam(fgam, select = TRUE, data = df4, family = ziP)
+gam2 <- gam(fgam, data = df4, family = ziP)
 summary(gam2) # deviance explained = 94.6%
 anova(gam2)
+
+appraise(gam2)
+
+b <- getViz(gam2)
+print(plot(b, allTerms = T), pages = 1) 
+
+p <- tidygam::predict_gam(gam2, 
+                          series = "gcps",
+                          exclude_terms = list("gender",
+                                                   "pain_loc",
+                                                   "pain_ext",
+                                                   "work",
+                                                   "comorbidity", 
+                                                   "s(age)",
+                                                   "s(expect)",
+                                                   "s(lot)",
+                                                   "s(cpaq)"))
+
+simulationOutput <- simulateResiduals(fittedModel = gam2)
+plot(simulationOutput)
+testZeroInflation(simulationOutput)
 
 plot(gam2)
 gam.check(gam2)
@@ -264,5 +184,17 @@ gam2$outer.info
 range(predict(gam2, type = "response")[df4$gcps_t1==0])
 # check zero prediction 
 boxplot(predict(gam2) ~ (df4$gcps_t1==0))
+
+f = plot_smooths(model = gam2, series = gcps)
+```
+
+## Stepwise
+
+```{r}
+gam3 <- buildgam(fgam, data = df4, family = ziP)
+b <- getViz(gam3@model)
+print(plot(b, allTerms = T), pages = 1) 
+
+draw(gam3@model, select = c("s(cpaq)", "s(expect)", "s(age)"))
 ```
 
