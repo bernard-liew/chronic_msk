@@ -175,7 +175,6 @@ simulationOutput <- simulateResiduals(fittedModel = gam2)
 plot(simulationOutput)
 testZeroInflation(simulationOutput)
 
-plot(gam2)
 gam.check(gam2)
 # convergence check
 gam2$outer.info
@@ -185,7 +184,7 @@ range(predict(gam2, type = "response")[df4$gcps_t1==0])
 # check zero prediction 
 boxplot(predict(gam2) ~ (df4$gcps_t1==0))
 
-f = plot_smooths(model = gam2, series = gcps)
+f = tidymv::plot_smooths(model = gam2, series = gcps)
 ```
 
 ## Stepwise
@@ -196,5 +195,138 @@ b <- getViz(gam3@model)
 print(plot(b, allTerms = T), pages = 1) 
 
 draw(gam3@model, select = c("s(cpaq)", "s(expect)", "s(age)"))
+```
+
+## Analyse zero-inflated normal
+
+```{r}
+# remotes::install_github("neural-structured-additive-learning/mixdistreg")
+library(mixdistreg)
+# zero-inflated normal instead of ziP
+zinorm <- zinreg(
+  list_of_formulas = list(mean = ~ gender +
+                            pain_loc  + 
+                            pain_ext  + 
+                            work  + 
+                            comorbidity  + 
+                            s(age)  + 
+                            s(gcps)  + 
+                            s(expect)  + 
+                            s(lot)  + 
+                            s(cpaq),
+                          scale = ~ 1),
+  formula_inflation = ~ 1,
+  y = df4$gcps_t1,
+  data = df4,
+  optimizer = optimizer_rmsprop(learning_rate = 0.01),
+  penalty_options = penalty_control(df = 12)
+)
+
+zinorm %>% fit(epochs = 1000L, early_stopping = TRUE,
+               patience = 50L, validation_split = 0.1,
+               verbose = TRUE)
+
+par(mfrow = c(2,3))
+# smoothing different than in gam as df are fixed prior to model fitting
+zinorm %>% plot(which_dist = "normal")
+# categorical effects are pretty large -> not sure if
+# everything is correct
+zinorm %>% coef(which_dist = "normal")
+
+par(mfrow=c(1,2))
+# check "residuals" vs. fitted
+plot(df4$gcps_t1 - fitted(zinorm) ~ fitted(zinorm))
+points(df4$gcps_t1 - predict(gam2, type = "response") ~ predict(gam2, type = "response"), col = "red")
+# check fitted vs. truth
+plot(fitted(zinorm) ~ df4$gcps_t1)
+points(predict(gam2, type = "response") ~ df4$gcps_t1, col = "red")
+
+# in-sample mse
+Metrics::mse(df4$gcps_t1, predict(gam2, type = "response"))
+Metrics::mse(df4$gcps_t1, predict(zinorm))
+# gam (and/or ziP) better in-sample (does not say something about out-of-sample)
+
+# => check why:
+ziP_nn <- zinreg(
+  list_of_formulas = list(mean = ~ gender +
+                            pain_loc  + 
+                            pain_ext  + 
+                            work  + 
+                            comorbidity  + 
+                            s(age)  + 
+                            s(gcps)  + 
+                            s(expect)  + 
+                            s(lot)  + 
+                            s(cpaq)),
+  formula_inflation = ~ 1,
+  family= "poisson",
+  y = df4$gcps_t1,
+  data = df4,
+  optimizer = optimizer_rmsprop(learning_rate = 0.01),
+  penalty_options = penalty_control(df = 12)
+)
+
+ziP_nn %>% fit(epochs = 1000L, early_stopping = TRUE,
+               patience = 50L, validation_split = 0.1,
+               verbose = TRUE)
+
+Metrics::mse(df4$gcps_t1, predict(ziP_nn))
+# => so gam fits the data better, but for given
+# smoothness (as in mixdistreg), ziP is better than
+# zinormal
+```
+
+# Example of a conditional zero-inflation
+
+```{r}
+ziPcond <- zinreg(
+  list_of_formulas = list(mean = ~ gender +
+                            pain_loc  + 
+                            pain_ext  + 
+                            work  + 
+                            comorbidity  + 
+                            s(age)  + 
+                            s(gcps)  + 
+                            s(expect)  + 
+                            s(lot)  + 
+                            s(cpaq)),
+  family = "poisson",
+  formula_inflation = ~ 1 + s(age), 
+  # -> now probability being zero
+  # is modelled to depend on the age as well
+  y = df4$gcps_t1,
+  data = df4,
+  optimizer = optimizer_rmsprop(learning_rate = 0.01),
+  penalty_options = penalty_control(df = 12)
+)
+
+# much more difficult optimization problem as it seems
+ziPcond %>% fit(epochs = 1000L, early_stopping = TRUE,
+                patience = 150L, validation_split = 0.1,
+                verbose = TRUE)
+
+par(mfrow = c(2,3))
+# smoothing different than in gam as df are fixed prior to model fitting
+ziPcond %>% plot(which_dist = "poisson")
+# smooths for age for the probability to be of one or the other
+# class (zero / no-zero)
+par(mfrow = c(1,2))
+ziPcond %>% plot() # not much different except for young age
+
+# now check estimated effect 
+ziPcond %>% coef(which_dist = "poisson")
+
+par(mfrow=c(1,2))
+# check "residuals" vs. fitted
+plot(df4$gcps_t1 - fitted(ziPcond) ~ fitted(ziPcond))
+points(df4$gcps_t1 - predict(gam2, type = "response") ~ predict(gam2, type = "response"), col = "red")
+# check fitted vs. truth
+plot(fitted(ziPcond) ~ df4$gcps_t1)
+points(predict(gam2, type = "response") ~ df4$gcps_t1, col = "red")
+
+# in-sample mse
+Metrics::mse(df4$gcps_t1, predict(gam2, type = "response"))
+Metrics::mse(df4$gcps_t1, predict(ziPcond))
+# gam again better (conditioning makes the model worse)
 ```
 
